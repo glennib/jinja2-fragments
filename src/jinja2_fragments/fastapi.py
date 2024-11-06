@@ -42,6 +42,7 @@ class Jinja2Blocks(Jinja2Templates):
     @typing.overload
     def TemplateResponse(
         self,
+        request: Request,
         name: str,
         context: dict[str, typing.Any] | None = None,
         status_code: int = 200,
