@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import typing
+import warnings
 
 try:
     from starlette.background import BackgroundTask
     from starlette.responses import HTMLResponse, Response
     from starlette.templating import Jinja2Templates, _TemplateResponse
+    from starlette.requests import Request
 except ModuleNotFoundError as e:
     raise ModuleNotFoundError(
         "Install Starlette to use jinja2_fragments.fastapi"
@@ -19,20 +21,21 @@ class InvalidContextError(Exception):
 
 
 class Jinja2Blocks(Jinja2Templates):
-    def __init__(self, directory, **env_options):
-        super().__init__(directory, **env_options)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
     @typing.overload  # type: ignore
     def TemplateResponse(
         self,
+        request: Request,
         name: str,
-        context: dict[str, typing.Any],
+        context: dict[str, typing.Any] | None = None,
         status_code: int = 200,
         headers: typing.Mapping[str, str] | None = None,
         media_type: str | None = None,
         background: BackgroundTask | None = None,
         *,
-        block_names: list[str] = [],
+        block_names: list[str] | None = None,
     ) -> Response:
         ...
 
@@ -40,7 +43,7 @@ class Jinja2Blocks(Jinja2Templates):
     def TemplateResponse(
         self,
         name: str,
-        context: dict[str, typing.Any],
+        context: dict[str, typing.Any] | None = None,
         status_code: int = 200,
         headers: typing.Mapping[str, str] | None = None,
         media_type: str | None = None,
@@ -52,22 +55,62 @@ class Jinja2Blocks(Jinja2Templates):
 
     def TemplateResponse(
         self,
-        name: str,
-        context: dict[str, typing.Any],
-        status_code: int = 200,
-        headers: typing.Mapping[str, str] | None = None,
-        media_type: str | None = None,
-        background: BackgroundTask | None = None,
-        **kwargs: typing.Any,
+        *args: typing.Any,
+        **kwargs: typing.Any
     ) -> Response:
-        if "request" not in context:
-            raise ValueError('context must include a "request" key')
-        template = self.get_template(name)
+        if args:
+            if isinstance(args[0], str):  # the first argument is template name (old style)
+                warnings.warn(
+                    "The `name` is not the first parameter anymore. "
+                    "The first parameter should be the `Request` instance.\n"
+                    'Replace `TemplateResponse(name, {"request": request})` by `TemplateResponse(request, name)`.',
+                    DeprecationWarning,
+                )
+
+                name = args[0]
+                context = args[1] if len(args) > 1 else kwargs.get("context", {})
+                status_code = args[2] if len(args) > 2 else kwargs.get("status_code", 200)
+                headers = args[2] if len(args) > 2 else kwargs.get("headers")
+                media_type = args[3] if len(args) > 3 else kwargs.get("media_type")
+                background = args[4] if len(args) > 4 else kwargs.get("background")
+
+                if "request" not in context:
+                    raise ValueError('context must include a "request" key')
+                request = context["request"]
+            else:  # the first argument is a request instance (new style)
+                request = args[0]
+                name = args[1] if len(args) > 1 else kwargs["name"]
+                context = args[2] if len(args) > 2 else kwargs.get("context", {})
+                status_code = args[3] if len(args) > 3 else kwargs.get("status_code", 200)
+                headers = args[4] if len(args) > 4 else kwargs.get("headers")
+                media_type = args[5] if len(args) > 5 else kwargs.get("media_type")
+                background = args[6] if len(args) > 6 else kwargs.get("background")
+        else:  # all arguments are kwargs
+            if "request" not in kwargs:
+                warnings.warn(
+                    "The `TemplateResponse` now requires the `request` argument.\n"
+                    'Replace `TemplateResponse(name, {"context": context})` by `TemplateResponse(request, name)`.',
+                    DeprecationWarning,
+                )
+                if "request" not in kwargs.get("context", {}):
+                    raise ValueError('context must include a "request" key')
+
+            context = kwargs.get("context", {})
+            request = kwargs.get("request", context.get("request"))
+            name = typing.cast(str, kwargs["name"])
+            status_code = kwargs.get("status_code", 200)
+            headers = kwargs.get("headers")
+            media_type = kwargs.get("media_type")
+            background = kwargs.get("background")
+
+        context.setdefault("request", request)
+        for context_processor in self.context_processors:
+            context.update(context_processor(request))
 
         block_name = kwargs.get("block_name", None)
-        block_names = kwargs.get("block_names", [])
+        block_names = kwargs.get("block_names", None)
 
-        if block_name:
+        if block_name is not None:
             content = render_block(
                 self.env,
                 name,
@@ -97,6 +140,7 @@ class Jinja2Blocks(Jinja2Templates):
                 background=background,
             )
 
+        template = self.get_template(name)
         return _TemplateResponse(
             template,
             context,
